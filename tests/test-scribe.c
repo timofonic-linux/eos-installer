@@ -29,6 +29,7 @@
 #include <stdio.h>
 
 #include <glib.h>
+#include <gio/gunixinputstream.h>
 #include <gio/gunixoutputstream.h>
 
 #include "gis-scribe.h"
@@ -60,6 +61,7 @@ typedef struct {
   GFile *signature;
   gchar *target_path;
   GFile *target;
+  gint memfd;
 
   GisScribe *scribe;
   GCancellable *cancellable;
@@ -115,6 +117,17 @@ test_scribe_notify_progress_cb (GObject    *object,
   fixture->progress = progress;
 }
 
+static void
+seek_to_start (int fd)
+{
+  if (0 != lseek (fd, 0, SEEK_SET))
+    {
+      perror ("lseek");
+      g_assert_not_reached ();
+    }
+}
+
+
 /* Returns a writable fd with size fixture.data.memfd_size; writes past this point
  * will fail.
  */
@@ -143,11 +156,7 @@ fixture_create_memfd (Fixture *fixture)
   g_assert_true (ret);
   g_assert_cmpuint (size, ==, fixture->data->memfd_size);
 
-  if (0 != lseek (fd, 0, SEEK_SET))
-    {
-      perror ("lseek");
-      g_assert_not_reached ();
-    }
+  seek_to_start (fd);
 
   /* Forbid extending the file */
   if (0 != fcntl (fd, F_ADD_SEALS, F_SEAL_GROW))
@@ -156,6 +165,8 @@ fixture_create_memfd (Fixture *fixture)
       g_assert_not_reached ();
     }
 
+  /* Save a copy so we can read back what was written. */
+  fixture->memfd = dup (fd);
   return fd;
 }
 
@@ -195,6 +206,7 @@ fixture_set_up (Fixture *fixture,
       g_assert_no_error (error);
 
       fd = open (fixture->target_path, O_WRONLY | O_SYNC | O_CLOEXEC | O_EXCL);
+      fixture->memfd = -1;
     }
 
   g_assert (fd >= 0);
@@ -265,6 +277,9 @@ fixture_tear_down (Fixture *fixture,
   g_clear_object (&fixture->target);
   g_clear_pointer (&fixture->loop, g_main_loop_unref);
   g_clear_pointer (&fixture->main_thread, g_thread_unref);
+
+  if (fixture->memfd != -1 && 0 != close (fixture->memfd))
+    perror ("close (fixture->memfd)");
 
   rm_r (fixture->tmpdir);
   g_clear_pointer (&fixture->tmpdir, g_free);
@@ -359,6 +374,14 @@ static void
 test_write_error (Fixture       *fixture,
                   gconstpointer  user_data)
 {
+  g_autoptr(GInputStream) input = NULL;
+  gsize size = 1024 * 1024;
+  gsize read_size;
+  g_autofree gchar *first_mib = g_malloc (size);
+  g_autofree gchar *expected_first_mib = g_malloc (size);
+  gboolean ret;
+  GError *error = NULL;
+
   /* fixture->target is a dummy file. The fd passed to GisScribe is created by
    * test_write_error_create_memfd(): writes past memfd_size will fail. An
    * error should be signalled.
@@ -371,8 +394,19 @@ test_write_error (Fixture       *fixture,
   g_assert_error (fixture->error,
                   G_IO_ERROR,
                   G_IO_ERROR_PERMISSION_DENIED);
-}
 
+  memset (expected_first_mib, '\0', size);
+
+  seek_to_start (fixture->memfd);
+  input = g_unix_input_stream_new (fixture->memfd, /* close_fd */ FALSE);
+  ret = g_input_stream_read_all (input, first_mib, size,
+                                 &read_size, NULL, &error);
+  g_assert_no_error (error);
+  g_assert_true (ret);
+
+  g_assert_cmpmem (first_mib, read_size,
+                   expected_first_mib, size);
+}
 
 static gchar *
 test_build_filename (GTestFileType file_type,
