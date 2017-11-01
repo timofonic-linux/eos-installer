@@ -282,6 +282,20 @@ test_write_success (Fixture       *fixture,
                    target_contents, target_length);
 }
 
+static void
+test_truncated (Fixture       *fixture,
+                gconstpointer  user_data)
+{
+  gis_scribe_write_async (fixture->scribe, fixture->cancellable,
+                          test_scribe_write_cb, fixture);
+  g_main_loop_run (fixture->loop);
+
+  g_assert (fixture->finished);
+  g_assert_error (fixture->error,
+                  G_IO_ERROR,
+                  G_IO_ERROR_PARTIAL_INPUT);
+}
+
 static gchar *
 test_build_filename (GTestFileType file_type,
                      const gchar  *basename)
@@ -303,6 +317,8 @@ main (int argc, char *argv[])
   g_autofree gchar *image_gz_sig_path = NULL;
   g_autofree gchar *image_xz_path = NULL;
   g_autofree gchar *image_xz_sig_path = NULL;
+  g_autofree gchar *trunc_gz_path = NULL;
+  g_autofree gchar *trunc_gz_sig_path = NULL;
   g_autofree gchar *wjt_sig_path = NULL;
   int ret;
 
@@ -318,6 +334,8 @@ main (int argc, char *argv[])
   image_gz_sig_path = test_build_filename (G_TEST_BUILT, IMAGE ".gz.asc");
   image_xz_path     = test_build_filename (G_TEST_BUILT, IMAGE ".xz");
   image_xz_sig_path = test_build_filename (G_TEST_BUILT, IMAGE ".xz.asc");
+  trunc_gz_path     = test_build_filename (G_TEST_BUILT, "w.truncated.gz");
+  trunc_gz_sig_path = test_build_filename (G_TEST_BUILT, "w.truncated.gz.asc");
   wjt_sig_path      = test_build_filename (G_TEST_DIST, "wjt.asc");
 
   /* Globals */
@@ -368,6 +386,40 @@ main (int argc, char *argv[])
   g_test_add ("/scribe/good-signature-img", Fixture, &good_signature,
               fixture_set_up,
               test_write_success,
+              fixture_tear_down);
+
+  /* Valid signature for a gzipped image */
+  TestData good_signature_gz = {
+      .image_path = image_gz_path,
+      .signature_path = image_gz_sig_path,
+  };
+  g_test_add ("/scribe/good-signature-gz", Fixture, &good_signature_gz,
+              fixture_set_up,
+              test_write_success,
+              fixture_tear_down);
+
+  /* Valid signature for a xzipped image */
+  TestData good_signature_xz = {
+      .image_path = image_xz_path,
+      .signature_path = image_xz_sig_path,
+  };
+  g_test_add ("/scribe/good-signature-xz", Fixture, &good_signature_xz,
+              fixture_set_up,
+              test_write_success,
+              fixture_tear_down);
+
+  /* Valid signature for a corrupt (specifically, truncated) gzipped image. By
+   * having a valid signature we can be sure we're exercising the
+   * "decompression error" path rather than the "signature invalid" path.
+   */
+  TestData good_signature_truncated_gz = {
+      .image_path = trunc_gz_path,
+      .signature_path = trunc_gz_sig_path,
+  };
+  g_test_add ("/scribe/good-signature-truncated-gz", Fixture,
+              &good_signature_truncated_gz,
+              fixture_set_up,
+              test_truncated,
               fixture_tear_down);
 
   ret = g_test_run ();

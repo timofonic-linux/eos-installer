@@ -18,6 +18,8 @@ test_data = \
 	w.img.gz.asc \
 	w.img.xz \
 	w.img.xz.asc \
+	w.truncated.gz \
+	w.truncated.gz.asc \
 	$(NULL)
 
 CLEANFILES += $(test_data)
@@ -31,6 +33,9 @@ w.img:
 
 %.img.gz: %.img
 	$(AM_V_GEN) rm -f $@ && gzip -1 --keep $<
+
+%.truncated.gz: %.img.gz
+	head --bytes $$(( $$(stat --format='%s' $<) / 2 )) $< >$@
 
 # Test "images" are signed by a throwaway key with no passphrase.
 # The public half is used as the test keyring
